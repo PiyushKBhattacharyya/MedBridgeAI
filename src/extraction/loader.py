@@ -12,8 +12,8 @@ def load_text_documents(path: str):
     elif os.path.isdir(path):
         # Load both .txt and .md files
         # Depending on system, it's simpler to use separate Loaders
-        txt_loader = DirectoryLoader(path, glob="**/*.txt", loader_cls=TextLoader)
-        md_loader = DirectoryLoader(path, glob="**/*.md", loader_cls=TextLoader)
+        txt_loader = DirectoryLoader(path, glob="**/*.txt", loader_cls=TextLoader, loader_kwargs={'encoding': 'utf-8'})
+        md_loader = DirectoryLoader(path, glob="**/*.md", loader_cls=TextLoader, loader_kwargs={'encoding': 'utf-8'})
         
         docs = []
         try:

@@ -32,18 +32,34 @@ class IDPExtractor:
         # Define the system prompt guiding the extraction logic
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", """You are an expert AI medical intelligence extraction system for the Virtue Foundation. 
-Your goal is to parse unstructured medical notes, surveys, and facility reports.
-You must extract all relevant NGOs, healthcare facilities, and facts specifically as requested by the provided schema.
+Your task is to analyze medical notes, surveys, and facility reports, and extract structured facts about healthcare facilities and NGOs.
 
-Key extraction instructions:
-- 'procedure', 'equipment', and 'capability' facts must be written as clear, declarative sentences (e.g., "Hospital offers hemodialysis treatment 3 times weekly.", "Facility has a Siemens SOMATOM Force dual-source CT scanner."). Do not extract single words or nouns.
-- Use exact phrase matches when mapping to Medical Specialties (consult the schema definition).
-- Use exact phrasing when mapping to Enums (e.g., 'hospital', 'public', 'faith-tradition').
-- Phone numbers MUST be formatted exactly in E164 format (e.g., '+233392022664') regardless of how they appear in the raw text. Remove spaces, dashes, or local prefixes.
-- If a country isn't explicitly stated but can be inferred from context (like the city or domain name), provide its full name ('address_country') and the 2-letter ISO code ('address_countryCode').
-- If a value safely cannot be determined from the text, omit it (leave as null) rather than guessing. Do not hallucinate data.
+DEFINITIONS:
+- NGOs: Any non-profit organization that delivers tangible, on-the-ground healthcare services in low/lower-middle-income settings. Include medical foundations, non-profit research institutes, and professional medical societies that provide direct patient care. Exclude advocacy-only, government agencies.
+- Facilities: Any physical, currently operating site delivering in-person medical diagnosis or treatment (hospitals, clinics, centers). Exclude administrative offices or supply warehouses.
 
-Analyze the following document and output the structured JSON targeting the Schema."""),
+ORGANIZATION EXTRACTION RULES:
+- Only extract organizations explicitly mentioned by NAME. Do NOT infer names.
+- Always use the complete, unabbreviated form. Do not include suffixes like "Ltd" or "LLC".
+- If multiple variations appear, extract the most complete version.
+
+CONTACT & LOCATION RULES:
+- Phone numbers MUST be in exactly E164 format (e.g., '+233392022664').
+- Address: Address lines 1-3 are for STREET address only. City, State, Country go in their specific fields.
+- Country extraction is MANDATORY. If a country can be inferred from context (like the city or URL domain), provide its full name and the 2-letter ISO code.
+
+FACILITY FACTS RULES (procedure, equipment, capability):
+- Use clear, declarative sentences (e.g., "Hospital offers hemodialysis treatment 3 times weekly.", "Facility has a Siemens SOMATOM Force dual-source CT scanner.").
+- Do not extract single words or nouns. Include specific quantities or dates if available.
+
+MEDICAL SPECIALTIES RULES:
+- Extract all medical specialties, matching exactly to standard CamelCase forms (e.g., "internalMedicine", "familyMedicine", "dentistry", "emergencyMedicine", "generalSurgery", "pediatrics", "gynecologyAndObstetrics").
+- Parse facility name (e.g. "Dental Clinic" -> "dentistry", "Eye Center" -> "ophthalmology").
+
+CRITICAL REQUIREMENT:
+- Be conservative. If a value safely cannot be determined from the text, omit it (leave as null). Do not hallucinate.
+
+Analyze the following document and output the structured JSON targeting the exact Schema."""),
             ("user", "Document Text:\n{document_text}")
         ])
         
