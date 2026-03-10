@@ -20,12 +20,37 @@ This project aims to build an **Intelligent Document Parsing (IDP) Agent**—an 
 * `tests/`: Automated test suite.
 
 ## Development Phases
-- **Phase 1**: Foundation & Infrastructure Setup (Data models, schemas)
-- **Phase 2**: Core IDP Agent Engine (Unstructured extraction pipeline)
+- **Phase 1**: Foundation & Infrastructure Setup (Data models, schemas) [x]
+- **Phase 2**: Core IDP Agent Engine (Unstructured extraction pipeline) [x]
 - **Phase 3**: Intelligent Synthesis & Storage (Database, RAG)
 - **Phase 4**: Planning System & User Interface (Streamlit, NLP chat)
 - **Phase 5**: Advanced Features & Refinement (Citations, Map Visualization)
 
 ## Setup Instructions
 
-*(Coming soon...)*
+1. Setup virtual environment and install dependencies:
+```bash
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+```
+2. Set up environment variables in a `.env` file in the root directory:
+```bash
+GEMINI_API_KEY="your_gemini_api_key"
+```
+3. Run the extraction pipeline:
+```bash
+python scripts\extract_samples.py
+```
+
+## Testing
+
+1. Run the test suite:
+```bash
+pytest tests
+```
+
+2. Test the extraction JSON:
+```bash
+python examples\test_extraction.py
+```
