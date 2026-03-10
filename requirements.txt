@@ -1,6 +1,7 @@
 langchain
 langchain-community
-langchain-openai
+langchain-google-genai
 pydantic
 python-dotenv
 pytest
+pandas

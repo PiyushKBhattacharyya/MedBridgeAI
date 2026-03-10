@@ -1,11 +1,31 @@
 from typing import List, Literal, Optional
+
 from pydantic import BaseModel, Field
 
-# -------------------------------------------------------------------
-# From facility_and_ngo_fields.py
-# -------------------------------------------------------------------
+ORGANIZATION_INFORMATION_SYSTEM_PROMPT = """
+You extract facts ONLY about this organization: {organization}.
+Be conservative. If attribution is uncertain, exclude it.
+
+Rules (hard):
+- Include a fact only if its evidence explicitly names {organization} OR uses an unambiguous pointer to it (same address/phone/URL, "this organization" within its own profile).
+- If multiple facilities are on the page, ignore all others. No roll-ups or mixing.
+- Do NOT infer missing details, do NOT paraphrase into new facts, do NOT fill gaps.
+- If a value can't be directly mapped to {organization}, omit it.
+- For official website, only include the domain name, not the full URL. Note that it must correspond to the organization's official website or else it should not be included.
+- The official phone number must be the organization's primary official contact number. If it is not present, don't list it here.
+
+**Address Parsing Rules:**
+- ALWAYS parse comma-separated location strings into separate fields (city, state/region, country).
+- address_line1/line2/line3 are for STREET addresses only, NOT for city/state/country.
+- Country extraction is MANDATORY. Use ALL available information sources to determine the country.
+- If direct country information is not explicitly stated, use contextual clues from the URL domain, phone numbers, or website content to infer the country.
+- DO NOT leave country fields blank if ANY information suggests a country location.
+"""
+
+
 class BaseOrganization(BaseModel):
     """Base model containing shared fields between Facility and NGO."""
+
     name: str = Field(..., description="Official name of the organization")
     phone_numbers: Optional[List[str]] = Field(
         None,
@@ -70,6 +90,7 @@ class BaseOrganization(BaseModel):
 
 class Facility(BaseOrganization):
     """Pydantic model for facility structured output extraction."""
+
     facilityTypeId: Optional[Literal["hospital", "pharmacy", "doctor", "clinic", "dentist"]] = Field(
         None, description="type of facility (only one of these values)"
     )
@@ -93,46 +114,11 @@ class Facility(BaseOrganization):
     capacity: Optional[int] = Field(
         None, description="Overall inpatient bed capacity of the facility"
     )
-    
-    # -------------------------------------------------------------------
-    # Appended from free_form.py
-    # -------------------------------------------------------------------
-    procedure: Optional[List[str]] = Field(
-        None,
-        description=(
-            "Specific clinical services performed at the facility—medical/surgical interventions "
-            "and diagnostic procedures and screenings (e.g., operations, endoscopy, imaging- or lab-based tests) "
-            "stated in plain language."
-        )
-    )
-    equipment: Optional[List[str]] = Field(
-        None,
-        description=(
-            "Physical medical devices and infrastructure—imaging machines (MRI/CT/X-ray), surgical/OR technologies, "
-            "monitors, laboratory analyzers, and critical utilities (e.g., piped oxygen/oxygen plants, backup power). "
-            "Include specific models when available. Do NOT list bed counts here; only list specific bed devices/models."
-        )
-    )
-    capability: Optional[List[str]] = Field(
-        None,
-        description=(
-            "Medical capabilities defining what level and types of clinical care the facility can deliver—"
-            "trauma/emergency care levels, specialized units (ICU/NICU/burn unit), clinical programs (stroke care, IVF), "
-            "diagnostic capabilities (MRI, neurodiagnostics), accreditations, inpatient/outpatient, staffing levels, patient capacity. "
-            "Excludes: addresses, contact info, business hours, pricing."
-        )
-    )
-    
-    # -------------------------------------------------------------------
-    # Appended from medical_specialties.py
-    # -------------------------------------------------------------------
-    specialties: Optional[List[str]] = Field(
-        None, description="The medical specialties associated with the organization"
-    )
 
 
 class NGO(BaseOrganization):
     """Pydantic model for NGO structured output extraction."""
+
     countries: Optional[List[str]] = Field(
         None, description="Countries where the NGO operates. (array of ISO alpha-2 codes)"
     )
@@ -143,27 +129,4 @@ class NGO(BaseOrganization):
     organizationDescription: Optional[str] = Field(
         None,
         description="A neutral, factual description derived from the mission statement (removes explicitly religious or subjective language)",
-    )
-
-
-# -------------------------------------------------------------------
-# Adapting organization_extraction.py for deep extraction
-# Instead of abstract string lists, we embed the parsed classes
-# -------------------------------------------------------------------
-class DocumentExtraction(BaseModel):
-    """
-    Master schema for unified document extraction. 
-    Combines the organization extraction with detailed deep extraction models.
-    """
-    ngos: Optional[List[NGO]] = Field(
-        default_factory=list,
-        description="Detailed profiles of NGOs explicitly mentioned in the text."
-    )
-    facilities: Optional[List[Facility]] = Field(
-        default_factory=list,
-        description="Detailed profiles of Healthcare facilities explicitly mentioned in the text."
-    )
-    other_organizations: Optional[List[BaseOrganization]] = Field(
-        default_factory=list,
-        description="Named entities that don't meet facility or NGO classifications, but have some basic details.",
     )
