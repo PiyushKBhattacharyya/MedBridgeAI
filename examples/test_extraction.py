@@ -5,7 +5,7 @@ from src.extraction.loader import load_text_documents
 
 def run_test():
     # Initialize the extractor
-    extractor = IDPExtractor(model_name="gemini-2.5-flash", temperature=0.0)
+    extractor = IDPExtractor(model_name="gemini-1.5-flash", temperature=0.0)
     
     # Path to our sample data
     samples_dir = os.path.join(os.path.dirname(__file__), "..", "data", "samples")

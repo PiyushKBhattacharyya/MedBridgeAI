@@ -66,6 +66,8 @@ class BaseOrganization(BaseModel):
         None,
         description="ISO alpha-2 country code of the organization. Derive from country name if needed - this field is REQUIRED when country is known.",
     )
+    latitude: Optional[float] = Field(None, description="The latitude coordinate for the organization's location")
+    longitude: Optional[float] = Field(None, description="The longitude coordinate for the organization's location")
 
 
 class Facility(BaseOrganization):

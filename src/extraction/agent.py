@@ -1,75 +1,116 @@
 import os
+import warnings
+import json
+import re
+import torch
 from typing import List
 from dotenv import load_dotenv
+from transformers import AutoTokenizer, logging
+from optimum.pipelines import pipeline
+from optimum.onnxruntime import ORTModelForCausalLM
+import onnxruntime as ort
+from src.schema.models import DocumentExtraction, Facility, NGO
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate
-from src.schema.models import DocumentExtraction
+# Suppress non-critical hardware and tracing warnings globally
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+os.environ["ORT_LOGGING_LEVEL"] = "3" 
+warnings.filterwarnings("ignore")
+logging.set_verbosity_error()
 
-# Load environment variables (e.g., GEMINI_API_KEY)
+def get_best_provider():
+    available = ort.get_available_providers()
+    if "CUDAExecutionProvider" in available:
+        return "CUDAExecutionProvider"
+    if "DmlExecutionProvider" in available:
+        return "DmlExecutionProvider"
+    return "CPUExecutionProvider"
+
+# Load environment variables
 load_dotenv()
 
+
 class IDPExtractor:
-    def __init__(self, model_name: str = "gemini-2.5-flash", temperature: float = 0.0):
+    def __init__(self, model_id: str = "Qwen/Qwen2.5-0.5B-Instruct", temperature: float = 0.1, model=None, tokenizer=None):
         """
-        Initializes the IDP extractor using LangChain's structured output with Gemini.
+        Initializes the IDP extractor. Can accept an existing model/tokenizer to save VRAM.
         """
-        # Ensure you have your GEMINI_API_KEY set in .env
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise ValueError("API Key not found. Please set GEMINI_API_KEY or GOOGLE_API_KEY in .env")
+        if model and tokenizer:
+            self.model = model
+            self.tokenizer = tokenizer
+            print("IDPExtractor: Using shared model instance.")
+        else:
+            # Localize model check
+            local_model_path = os.path.join("models", "qwen2.5-0.5b-onnx")
+            export_needed = True
+            if os.path.exists(local_model_path):
+                model_id = local_model_path
+                export_needed = False
+                print(f"Using localized model: {model_id}")
 
-        # Initialize Gemini Model
-        self.llm = ChatGoogleGenerativeAI(
-            model=model_name, 
+            # Auto-detect best provider (CUDA > DirectML > CPU)
+            provider = get_best_provider()
+            print(f"Loading local SLM: {model_id} on {provider}...")
+            
+            # Load ONNX model with appropriate provider
+            self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+            self.model = ORTModelForCausalLM.from_pretrained(
+                model_id,
+                export=export_needed, 
+                provider=provider
+            )
+            print(f"IDPExtractor Active Backend: {provider}")
+        
+        self.pipe = pipeline(
+            "text-generation",
+            model=self.model,
+            tokenizer=self.tokenizer,
+            max_new_tokens=1024,
             temperature=temperature,
-            google_api_key=api_key
+            do_sample=True if temperature > 0 else False,
+            repetition_penalty=1.1,
+            return_full_text=False,
+            device="cpu" 
         )
+        print("Extraction engine started via DirectML for AMD GPU")
         
-        # We bind our Pydantic schema to the LLM to force structured JSON output
-        self.structured_llm = self.llm.with_structured_output(DocumentExtraction)
+        # System instructions
+        self.system_prompt = """You are an expert AI medical intelligence extraction system for the Virtue Foundation.
+Your task is to analyze medical notes, surveys, and facility reports and extract a JSON object.
+
+EXTRACTION RULES:
+- Entities MUST be mentioned by NAME.
+- Be conservative. If a value cannot be determined, omit it (leave as null).
+- Output ONLY a JSON object matching this schema:
+{
+  "facilities": [{"name": "string", "description": "string", "capability": ["string"], "address_country": "string", "address_countryCode": "string"}],
+  "ngos": [{"name": "string", "organizationDescription": "string", "countries": ["string"]}]
+}
+"""
         
-        # Define the system prompt guiding the extraction logic
-        self.prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an expert AI medical intelligence extraction system for the Virtue Foundation. 
-Your task is to analyze medical notes, surveys, and facility reports, and extract structured facts about healthcare facilities and NGOs.
-
-DEFINITIONS:
-- NGOs: Any non-profit organization that delivers tangible, on-the-ground healthcare services in low/lower-middle-income settings. Include medical foundations, non-profit research institutes, and professional medical societies that provide direct patient care. Exclude advocacy-only, government agencies.
-- Facilities: Any physical, currently operating site delivering in-person medical diagnosis or treatment (hospitals, clinics, centers). Exclude administrative offices or supply warehouses.
-
-ORGANIZATION EXTRACTION RULES:
-- Only extract organizations explicitly mentioned by NAME. Do NOT infer names.
-- Always use the complete, unabbreviated form. Do not include suffixes like "Ltd" or "LLC".
-- If multiple variations appear, extract the most complete version.
-
-CONTACT & LOCATION RULES:
-- Phone numbers MUST be in exactly E164 format (e.g., '+233392022664').
-- Address: Address lines 1-3 are for STREET address only. City, State, Country go in their specific fields.
-- Country extraction is MANDATORY. If a country can be inferred from context (like the city or URL domain), provide its full name and the 2-letter ISO code.
-
-FACILITY FACTS RULES (procedure, equipment, capability):
-- Use clear, declarative sentences (e.g., "Hospital offers hemodialysis treatment 3 times weekly.", "Facility has a Siemens SOMATOM Force dual-source CT scanner.").
-- Do not extract single words or nouns. Include specific quantities or dates if available.
-
-MEDICAL SPECIALTIES RULES:
-- Extract all medical specialties, matching exactly to standard CamelCase forms (e.g., "internalMedicine", "familyMedicine", "dentistry", "emergencyMedicine", "generalSurgery", "pediatrics", "gynecologyAndObstetrics").
-- Parse facility name (e.g. "Dental Clinic" -> "dentistry", "Eye Center" -> "ophthalmology").
-
-CRITICAL REQUIREMENT:
-- Be conservative. If a value safely cannot be determined from the text, omit it (leave as null). Do not hallucinate.
-
-Analyze the following document and output the structured JSON targeting the exact Schema."""),
-            ("user", "Document Text:\n{document_text}")
-        ])
-        
-        self.extraction_chain = self.prompt | self.structured_llm
-
     def extract_from_text(self, text: str) -> DocumentExtraction:
         """
-        Runs the extraction pipeline on a single document text.
+        Runs the extraction pipeline and parses the JSON output.
         """
-        return self.extraction_chain.invoke({"document_text": text})
+        prompt = f"<|im_start|>system\n{self.system_prompt}<|im_end|>\n<|im_start|>user\nDocument Text:\n{text}<|im_end|>\n<|im_start|>assistant\n"
+        
+        output = self.pipe(prompt)[0]['generated_text']
+        
+        # Attempt to find JSON block in the output
+        try:
+            # Look for everything between the first '{' and the last '}'
+            match = re.search(r'\{.*\}', output, re.DOTALL)
+            if match:
+                json_str = match.group(0)
+                data = json.loads(json_str)
+                return DocumentExtraction(**data)
+            else:
+                print("No JSON found in model output. Raw output:")
+                print(output)
+                return DocumentExtraction(facilities=[], ngos=[])
+        except Exception as e:
+            print(f"Error parsing model output: {e}. Raw output:")
+            print(output)
+            return DocumentExtraction(facilities=[], ngos=[])
 
     def extract_from_documents(self, documents: List) -> List[DocumentExtraction]:
         """

@@ -4,3 +4,5 @@ __pycache__
 .env
 samples/
 .DS_Store
+data/prompts_and_pydantic_models
+data/

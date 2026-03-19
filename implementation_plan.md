@@ -20,8 +20,10 @@ Build an Intelligent Document Parsing (IDP) agentic AI system for the Virtue Fou
 
 ### Phase 3: Intelligent Synthesis & Storage
 **Objective**: Combine extractions into a searchable, relational format.
-- **Database/Vector Store**: Integrate a lightweight database (e.g., LanceDB, SQLite, or Databricks SQL if using Databricks platform) to store both the structured schemas and vectorized representations of descriptions.
-- **Synthesis Agent**: Create an agent that cross-references extracted facts to provide a unified view of regional capabilities.
+- **Database/Vector Store**: Integrate `LanceDB` to store extracted `Facility` and `NGO` objects. We will use Gemini embeddings for vector search on descriptions and capabilities.
+- **Data Integration**: Create a storage module that maps Pydantic models to LanceDB tables.
+- **Synthesis Agent**: Create a query interface that allows for semantic search ("Find facilities with CT scanners in Ghana") and basic filtering.
+- **Schema Evolution**: Ensure the database schema matches `src/schema/models.py`.
 
 ### Phase 4: Planning System & User Interface
 **Objective**: Build an accessible, intuitive UI for non-technical NGO planners.
