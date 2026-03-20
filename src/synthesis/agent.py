@@ -74,7 +74,7 @@ class SynthesisAgent:
 
     def answer_question(self, query: str):
         """
-        Retrieves relevant data from the store and synthesizes an answer.
+        Retrieves relevant data from the store and synthesizes an answer with citations.
         """
         # Step 1: Search facilities
         facilities_df = self.store.search_facilities(query, limit=5)
@@ -85,18 +85,24 @@ class SynthesisAgent:
         # Combine results for prompt
         results_text = "--- FACILITIES ---\n"
         if not facilities_df.empty:
-            results_text += facilities_df.drop(columns=['vector']).to_string()
+            # Include source_doc in the display for the assistant to cite
+            display_df = facilities_df.drop(columns=['vector'])
+            results_text += display_df.to_string()
         else:
             results_text += "No matching facilities found."
             
         results_text += "\n\n--- NGOs ---\n"
         if not ngos_df.empty:
-            results_text += ngos_df.drop(columns=['vector']).to_string()
+            display_df = ngos_df.drop(columns=['vector'])
+            results_text += display_df.to_string()
         else:
             results_text += "No matching NGOs found."
             
+        # Updated system prompt to encourage citations
+        citation_system_prompt = self.system_prompt + " ALWAYS cite your source documents (e.g., 'Source: Ghana_Medical_Report.md') when answering."
+        
         # Step 3: Generate synthesized answer
-        prompt = f"<|im_start|>system\n{self.system_prompt}\n\nSEARCH RESULTS:\n{results_text}<|im_end|>\n<|im_start|>user\n{query}<|im_end|>\n<|im_start|>assistant\n"
+        prompt = f"<|im_start|>system\n{citation_system_prompt}\n\nSEARCH RESULTS:\n{results_text}<|im_end|>\n<|im_start|>user\n{query}<|im_end|>\n<|im_start|>assistant\n"
         
         response = self.pipe(prompt)[0]['generated_text']
         return response

@@ -6,6 +6,8 @@ from src.extraction.agent import IDPExtractor
 from src.extraction.loader import load_text_documents
 from src.synthesis.database import MedBridgeStore
 from src.synthesis.agent import SynthesisAgent
+from transformers import AutoTokenizer
+from optimum.onnxruntime import ORTModelForCausalLM
 
 # Page configuration
 st.set_page_config(
@@ -127,9 +129,9 @@ with tab1:
                     
                     st.success(f"✓ Extraction Complete! Found {len(extraction.facilities)} facilities and {len(extraction.ngos)} NGOs.")
                     
-                    # Store
-                    st.session_state.store.add_extractions(extraction)
-                    st.toast("Data persisted to LanceDB", icon="💾")
+                    # Store with source tracking
+                    st.session_state.store.add_extractions(extraction, source_doc=uploaded_file.name)
+                    st.toast(f"Data from {uploaded_file.name} persisted to LanceDB", icon="💾")
                     
                     # Display JSON result
                     with st.expander("Show Extracted JSON"):
@@ -185,6 +187,21 @@ with tab3:
     else:
         st.info("Add facilities with coordinates to see them on the map.")
 
+    def format_list_column(val):
+        """Helper to format lists into clean, comma-separated strings for UI display."""
+        if isinstance(val, list):
+            if not val: return ""
+            return ", ".join(map(str, val))
+        if isinstance(val, str) and val.startswith("[") and val.endswith("]"):
+            try:
+                import ast
+                parsed = ast.literal_eval(val)
+                if isinstance(parsed, list):
+                    return ", ".join(map(str, parsed))
+            except:
+                pass
+        return val
+
     st.divider()
     
     col1, col2 = st.columns(2)
@@ -192,20 +209,76 @@ with tab3:
     with col1:
         st.subheader("Facilities")
         if not facilities_df.empty:
-            st.dataframe(facilities_df.drop(columns=['vector']), use_container_width=True)
-            csv = facilities_df.to_csv(index=False).encode('utf-8')
-            st.download_button("Download Facilities CSV", csv, "facilities.csv", "text/csv")
+            # Fix numeric types for Arrow before display
+            f_display = facilities_df.drop(columns=['vector'], errors='ignore')
+            num_cols = ['latitude', 'longitude', 'yearEstablished', 'numberDoctors', 'capacity', 'area']
+            for c in num_cols:
+                if c in f_display.columns: f_display[c] = pd.to_numeric(f_display[c], errors='coerce')
+            
+            # Clean up list columns for display
+            list_cols = ['capability', 'equipment', 'procedure', 'phone_numbers', 'websites']
+            for col in list_cols:
+                if col in f_display.columns:
+                    f_display[col] = f_display[col].apply(format_list_column)
+            
+            # Fill only object/string columns
+            obj_cols = f_display.select_dtypes(include=['object']).columns
+            f_display[obj_cols] = f_display[obj_cols].fillna("")
+            
+            st.dataframe(f_display, hide_index=True, width="stretch")
+            
+            # Full Download Option
+            full_f = st.session_state.store.get_all_facilities()
+            if not full_f.empty:
+                full_f = full_f.drop(columns=['vector'], errors='ignore')
+                for col in list_cols:
+                    if col in full_f.columns:
+                        full_f[col] = full_f[col].apply(format_list_column)
+                csv_f = full_f.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="Download FULL Facilities CSV (900+ records)",
+                    data=csv_f,
+                    file_name="medical_facilities_full.csv",
+                    mime="text/csv",
+                    help="Downloads the entire database table, bypassing the 500-row dashboard limit."
+                )
         else:
             st.info("No facilities stored yet.")
+
             
     with col2:
         st.subheader("NGOs")
         if not ngos_df.empty:
-            st.dataframe(ngos_df.drop(columns=['vector']), use_container_width=True)
-            csv = ngos_df.to_csv(index=False).encode('utf-8')
-            st.download_button("Download NGOs CSV", csv, "ngos.csv", "text/csv")
+            # Fix numeric types for Arrow before display
+            n_display = ngos_df.drop(columns=['vector'], errors='ignore')
+            for c in ['latitude', 'longitude', 'yearEstablished']:
+                if c in n_display.columns: n_display[c] = pd.to_numeric(n_display[c], errors='coerce')
+            
+            # Fill only object/string columns
+            obj_cols = n_display.select_dtypes(include=['object']).columns
+            n_display[obj_cols] = n_display[obj_cols].fillna("")
+            
+            st.dataframe(n_display, hide_index=True, width="stretch")
+            
+            # Full Download Option
+            full_n = st.session_state.store.get_all_ngos()
+            if not full_n.empty:
+                full_n = full_n.drop(columns=['vector'], errors='ignore')
+                # Format URL lists if present
+                for col in ['phone_numbers', 'websites']:
+                    if col in full_n.columns:
+                        full_n[col] = full_n[col].apply(format_list_column)
+                csv_n = full_n.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="Download FULL NGOs CSV",
+                    data=csv_n,
+                    file_name="medical_ngos_full.csv",
+                    mime="text/csv",
+                    help="Downloads the entire NGO database table."
+                )
         else:
             st.info("No NGOs stored yet.")
+
 
 st.divider()
 st.caption("Virtue Foundation x MedBridgeAI | Local-First Medical Intelligence")
