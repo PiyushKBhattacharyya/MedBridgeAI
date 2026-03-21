@@ -10,7 +10,4 @@ pandas
 lancedb
 pyarrow
 fastembed
-onnxruntime-directml
-torch
-transformers
-accelerate
+google-generativeai

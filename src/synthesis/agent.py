@@ -1,108 +1,76 @@
-from typing import List, Optional
-import warnings
-import torch
-from transformers import AutoTokenizer, logging
-from optimum.pipelines import pipeline
-from optimum.onnxruntime import ORTModelForCausalLM
-# Removed langchain imports to speed up local inference
-from src.synthesis.database import MedBridgeStore
 import os
-import onnxruntime as ort
+import sys
+import warnings
+import google.generativeai as genai
 import pandas as pd
+from typing import List, Optional
+from dotenv import load_dotenv
 
-# Suppress noisy hardware warnings
-os.environ["TRANSFORMERS_VERBOSITY"] = "error"
-warnings.filterwarnings("ignore")
-logging.set_verbosity_error()
+# Add project folder to sys.path so 'src' can be imported
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-def get_best_provider():
-    available = ort.get_available_providers()
-    if "CUDAExecutionProvider" in available:
-        return "CUDAExecutionProvider"
-    if "DmlExecutionProvider" in available:
-        return "DmlExecutionProvider"
-    return "CPUExecutionProvider"
+from src.synthesis.database import MedBridgeStore
+
+from src.utils.gemini_utils import rotator
+
+load_dotenv()
 
 class SynthesisAgent:
-    def __init__(self, store: MedBridgeStore, model_id: str = "Qwen/Qwen2.5-0.5B-Instruct", model=None, tokenizer=None):
+    def __init__(self, store: MedBridgeStore, model_id: str = "gemini-2.0-flash"):
         """
-        Initializes the Synthesis Assistant. Can accept an existing model/tokenizer to save VRAM.
+        Initializes the Synthesis Assistant using the Gemini API.
         """
         self.store = store
+        self.model_id = model_id
+        rotator.configure_genai()
+        self.model = genai.GenerativeModel(model_id)
+        print(f"SynthesisAgent initialized with Gemini ({model_id}) and multiple keys.")
         
-        if model and tokenizer:
-            self.model = model
-            self.tokenizer = tokenizer
-            print("SynthesisAgent: Using shared model instance.")
-        else:
-            # Localize model check
-            local_model_path = os.path.join("models", "qwen2.5-0.5b-onnx")
-            export_needed = True
-            if os.path.exists(local_model_path):
-                model_id = local_model_path
-                export_needed = False
-                print(f"Using localized model: {model_id}")
+        self.system_prompt = "You are the MedBridge AI Medical Assistant. Your role is to answer questions about healthcare facilities and NGOs in Ghana based on the provided search results from our database. Use ONLY the information provided. Be concise and professional."
 
-            # Auto-detect best provider
-            provider = get_best_provider()
-            print(f"Loading local SLM for synthesis on {provider}: {model_id}...")
-            
-            self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-            self.model = ORTModelForCausalLM.from_pretrained(
-                model_id,
-                export=export_needed,
-                provider=provider
-            )
-            print(f"SynthesisAgent Active Backend: {provider}")
-        
-        self.pipe = pipeline(
-            "text-generation",
-            model=self.model,
-            tokenizer=self.tokenizer,
-            max_new_tokens=512,
-            temperature=0.1,
-            do_sample=True,
-            repetition_penalty=1.1,
-            return_full_text=False,
-            device="cpu"
-        )
-        print("Synthesis engine running via DirectML for AMD GPU")
-        
-        self.system_prompt = "You are the MedBridge AI Synthesis Assistant. Your role is to answer questions about healthcare facilities and NGOs based on the provided search results from our database. Use ONLY the information provided. Be concise."
-        
-        # Using raw pipeline for faster local inference
-
-    def answer_question(self, query: str):
+    def answer_question(self, query: str) -> str:
         """
-        Retrieves relevant data from the store and synthesizes an answer with citations.
+        Retrieves relevant data from the store and synthesizes an answer with citations using Gemini.
         """
-        # Step 1: Search facilities
+        # Step 1: Search facilities and NGOs
         facilities_df = self.store.search_facilities(query, limit=5)
-        
-        # Step 2: Search NGOs
         ngos_df = self.store.search_ngos(query, limit=3)
         
-        # Combine results for prompt
-        results_text = "--- FACILITIES ---\n"
+        # Combine results into context
+        context = "--- FACILITIES ---\n"
         if not facilities_df.empty:
-            # Include source_doc in the display for the assistant to cite
-            display_df = facilities_df.drop(columns=['vector'])
-            results_text += display_df.to_string()
+            context += facilities_df.drop(columns=['vector', 'latitude', 'longitude'], errors='ignore').to_string(index=False)
         else:
-            results_text += "No matching facilities found."
+            context += "No matching facilities found."
             
-        results_text += "\n\n--- NGOs ---\n"
+        context += "\n\n--- NGOs ---\n"
         if not ngos_df.empty:
-            display_df = ngos_df.drop(columns=['vector'])
-            results_text += display_df.to_string()
+            context += ngos_df.drop(columns=['vector', 'latitude', 'longitude'], errors='ignore').to_string(index=False)
         else:
-            results_text += "No matching NGOs found."
-            
-        # Updated system prompt to encourage citations
-        citation_system_prompt = self.system_prompt + " ALWAYS cite your source documents (e.g., 'Source: Ghana_Medical_Report.md') when answering."
+            context += "No matching NGOs found."
+
+        # Step 2: Generate synthesized answer via Gemini with key rotation
+        prompt = f"""System: {self.system_prompt}
+ 
+ SEARCH RESULTS CONTEXT:
+ {context}
+ 
+ User Question: {query}
+ Assistant:"""
         
-        # Step 3: Generate synthesized answer
-        prompt = f"<|im_start|>system\n{citation_system_prompt}\n\nSEARCH RESULTS:\n{results_text}<|im_end|>\n<|im_start|>user\n{query}<|im_end|>\n<|im_start|>assistant\n"
-        
-        response = self.pipe(prompt)[0]['generated_text']
-        return response
+        # Try multiple keys if 429 occurs
+        for _ in range(max(1, len(rotator.keys))):
+            try:
+                response = self.model.generate_content(prompt)
+                return response.text.strip()
+            except Exception as e:
+                err_msg = str(e).lower()
+                if "429" in err_msg or "quota" in err_msg:
+                    print(f"Synthesis Key Rotated due to 429. Retrying...")
+                    rotator.rotate_key()
+                    self.model = genai.GenerativeModel(self.model_id) # Re-instantiate model with new key config
+                    continue
+                print(f"Gemini Synthesis Error: {e}")
+                return f"I encountered an error while synthesizing an answer: {e}"
+                
+        return "I exhausted all available Gemini API keys and still hit quota limits. Please try again later or add more API keys."

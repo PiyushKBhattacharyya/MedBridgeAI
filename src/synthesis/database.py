@@ -1,13 +1,19 @@
 import lancedb
 import os
+import sys
 import pandas as pd
 import onnxruntime as ort
 from typing import List, Optional, Any
 from dotenv import load_dotenv
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
+
+# Add project folder to sys.path so 'src' can be imported
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 from src.schema.models import Facility, NGO, DocumentExtraction
 
 load_dotenv()
+
 
 class MedBridgeStore:
     def __init__(self, db_path: str = "data/medbridge.lancedb"):
@@ -96,12 +102,22 @@ class MedBridgeStore:
         Adds extracted facilities and NGOs to the database with source tracking.
         """
         if extraction.facilities:
-            facility_data = self._prepare_facility_data(extraction.facilities, source_doc)
-            self._upsert_table(self.facility_table_name, facility_data)
+            self.add_facilities(extraction.facilities, source_doc)
             
         if extraction.ngos:
-            ngo_data = self._prepare_ngo_data(extraction.ngos, source_doc)
-            self._upsert_table(self.ngo_table_name, ngo_data)
+            self.add_ngos(extraction.ngos, source_doc)
+
+    def add_facilities(self, facilities: List[Facility], source_doc: str = "CSV Seed"):
+        """Adds a list of Facility objects to the database."""
+        if not facilities: return
+        data = self._prepare_facility_data(facilities, source_doc)
+        self._upsert_table(self.facility_table_name, data)
+
+    def add_ngos(self, ngos: List[NGO], source_doc: str = "CSV Seed"):
+        """Adds a list of NGO objects to the database."""
+        if not ngos: return
+        data = self._prepare_ngo_data(ngos, source_doc)
+        self._upsert_table(self.ngo_table_name, data)
 
     def _upsert_table(self, table_name: str, data: List[dict], mode: str = "append"):
         """
@@ -169,4 +185,13 @@ class MedBridgeStore:
         if self.ngo_table_name not in self.db.table_names():
             return pd.DataFrame()
         return self.db.open_table(self.ngo_table_name).to_pandas()
+
+    def clear_database(self):
+        """
+        Drops the facility and NGO tables to allow for a fresh seed.
+        """
+        for table in [self.facility_table_name, self.ngo_table_name]:
+            if table in self.db.table_names():
+                self.db.drop_table(table)
+        print("Database cleared.")
 
