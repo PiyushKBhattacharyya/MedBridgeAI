@@ -189,18 +189,23 @@ with tab3:
 
     def format_list_column(val):
         """Helper to format lists into clean, comma-separated strings for UI display."""
-        if isinstance(val, list):
-            if not val: return ""
+        import numpy as np
+        if isinstance(val, (list, np.ndarray)):
+            if len(val) == 0: return None
             return ", ".join(map(str, val))
+        if isinstance(val, str) and (val == "[]" or val == "[,]" or not val.strip()):
+            return None
         if isinstance(val, str) and val.startswith("[") and val.endswith("]"):
             try:
                 import ast
                 parsed = ast.literal_eval(val)
-                if isinstance(parsed, list):
+                if isinstance(parsed, (list, np.ndarray)):
+                    if len(parsed) == 0: return None
                     return ", ".join(map(str, parsed))
             except:
                 pass
         return val
+
 
     st.divider()
     

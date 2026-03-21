@@ -82,8 +82,8 @@ EXTRACTION RULES:
 - Be conservative. If a value cannot be determined, omit it (leave as null).
 - Output ONLY a JSON object matching this schema:
 {
-  "facilities": [{"name": "string", "description": "string", "capability": ["string"], "address_country": "string", "address_countryCode": "string"}],
-  "ngos": [{"name": "string", "organizationDescription": "string", "countries": ["string"]}]
+  "facilities": {"name": "string", "description": "string", "capability": ["string"], "address_country": "string", "address_countryCode": "string"},
+  "ngos": {"name": "string", "organizationDescription": "string", "countries": ["string"]}
 }
 """
         

@@ -27,6 +27,16 @@ def parse_list(v):
         except: pass
     return [i.strip() for i in s.split(",") if i.strip()]
 
+def safe_int(v):
+    if v is None or v == "" or pd.isna(v): return None
+    try: return int(float(v))
+    except: return None
+
+def safe_float(v):
+    if v is None or v == "" or pd.isna(v): return None
+    try: return float(v)
+    except: return None
+
 def merge_models(target, source_data: dict, model_type):
     """
     Smart merges source_data into target model.
@@ -45,6 +55,7 @@ def merge_models(target, source_data: dict, model_type):
         elif (current_val is None or current_val == "") and value is not None:
             setattr(target, field, value)
 
+
 def direct_seed():
     print("Starting SMART High-Fidelity Seeding...")
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -57,6 +68,10 @@ def direct_seed():
     facility_map = {} # key -> Facility
     ngo_map = {} # key -> NGO
     
+    # Advanced: Phone number cross-reference for merging
+    # map(phone_str -> key)
+    phone_to_key = {} 
+
     def get_clean_k(s):
         if not s: return ""
         return "".join(e for e in str(s) if e.isalnum()).lower()
@@ -77,11 +92,22 @@ def direct_seed():
         org_type = str(row['organization_type']).lower()
         name = str(row['name']).strip()
         address1 = clean_val(row.get('address_line1', ''))
+        phones = parse_list(row.get('phone_numbers'))
         
         name_k = get_clean_k(name)
         city_k = get_clean_k(city)
         addr_k = get_clean_k(address1)
+        
+        # Priority 1: Check existing key (Name+Location)
         key = (name_k, addr_k, city_k or "unknown")
+        
+        # Priority 2: Check Phone collision (Advanced Merge)
+        matched_key = key
+        for p in phones:
+            p_clean = get_clean_k(p)
+            if p_clean and len(p_clean) > 5 and p_clean in phone_to_key:
+                matched_key = phone_to_key[p_clean]
+                break
 
         if org_type == "ngo":
             data = {
@@ -89,27 +115,30 @@ def direct_seed():
                 "organizationDescription": clean_val(row.get('description')),
                 "missionStatement": clean_val(row.get('missionStatement')),
                 "countries": ["Ghana"],
-                "phone_numbers": parse_list(row.get('phone_numbers')),
+                "phone_numbers": phones,
                 "email": clean_val(row.get('email')),
                 "websites": parse_list(row.get('websites')),
-                "facebookLink": clean_val(row.get('facebookLink')),
-                "twitterLink": clean_val(row.get('twitterLink')),
-                "linkedinLink": clean_val(row.get('linkedinLink')),
-                "instagramLink": clean_val(row.get('instagramLink')),
                 "logo": clean_val(row.get('logo')),
                 "address_line1": address1,
                 "address_city": city or "Unknown",
                 "address_stateOrRegion": region or "Ghana",
-                "address_country": "Ghana",
-                "address_countryCode": "GH",
-                "latitude": lat,
-                "longitude": lon,
-                "yearEstablished": int(float(row['yearEstablished'])) if pd.notna(row['yearEstablished']) else None
+                "latitude": safe_float(lat),
+                "longitude": safe_float(lon),
+                "yearEstablished": safe_int(row.get('yearEstablished')),
+                "facebookLink": clean_val(row.get('facebookLink')),
+                "twitterLink": clean_val(row.get('twitterLink')),
+                "linkedinLink": clean_val(row.get('linkedinLink')),
+                "instagramLink": clean_val(row.get('instagramLink'))
             }
-            if key in ngo_map:
-                merge_models(ngo_map[key], data, NGO)
+            if matched_key in ngo_map:
+                merge_models(ngo_map[matched_key], data, NGO)
             else:
-                ngo_map[key] = NGO(**data)
+                ngo_map[matched_key] = NGO(**data)
+            # Index phones for future merges
+            for p in phones:
+                p_c = get_clean_k(p)
+                if p_c and len(p_c) > 5: phone_to_key[p_c] = matched_key
+
         else:
             data = {
                 "name": name,
@@ -117,31 +146,33 @@ def direct_seed():
                 "capability": parse_list(row.get('capability')),
                 "equipment": parse_list(row.get('equipment')),
                 "procedure": parse_list(row.get('procedure')),
-                "latitude": lat,
-                "longitude": lon,
+                "latitude": safe_float(lat),
+                "longitude": safe_float(lon),
                 "address_line1": address1,
                 "address_city": city or "Unknown",
-                "address_stateOrRegion": region or "Ghana",
-                "address_country": "Ghana",
-                "address_countryCode": "GH",
-                "phone_numbers": parse_list(row.get('phone_numbers')),
+                "phone_numbers": phones,
                 "email": clean_val(row.get('email')),
                 "websites": parse_list(row.get('websites')),
-                "yearEstablished": int(float(row['yearEstablished'])) if pd.notna(row['yearEstablished']) else None,
-                "numberDoctors": clean_val(row.get('numberDoctors')),
-                "capacity": clean_val(row.get('capacity')),
-                "area": clean_val(row.get('area')),
+                "yearEstablished": safe_int(row.get('yearEstablished')),
+                "numberDoctors": clean_val(row.get('numberDoctors')), # Keep as str if schema says str
+                "capacity": safe_int(row.get('capacity')),
+                "area": safe_int(row.get('area')),
+                "logo": clean_val(row.get('logo')),
+                "acceptsVolunteers": clean_val(row.get('acceptsVolunteers')),
                 "facebookLink": clean_val(row.get('facebookLink')),
                 "twitterLink": clean_val(row.get('twitterLink')),
                 "linkedinLink": clean_val(row.get('linkedinLink')),
-                "instagramLink": clean_val(row.get('instagramLink')),
-                "logo": clean_val(row.get('logo')),
-                "acceptsVolunteers": clean_val(row.get('acceptsVolunteers'))
+                "instagramLink": clean_val(row.get('instagramLink'))
             }
-            if key in facility_map:
-                merge_models(facility_map[key], data, Facility)
+
+            if matched_key in facility_map:
+                merge_models(facility_map[matched_key], data, Facility)
             else:
-                facility_map[key] = Facility(**data)
+                facility_map[matched_key] = Facility(**data)
+            # Index phones for future merges
+            for p in phones:
+                p_c = get_clean_k(p)
+                if p_c and len(p_c) > 5: phone_to_key[p_c] = matched_key
 
     facilities = list(facility_map.values())
     ngos = list(ngo_map.values())
@@ -149,18 +180,19 @@ def direct_seed():
     # Bulk Create
     if facilities:
         print(f"Seeding {len(facilities)} smart-merged facilities...")
-        data = store._prepare_facility_data(facilities, "CSV Smart Merge v1")
+        data = store._prepare_facility_data(facilities, "CSV Smart Merge v2")
         store.db.create_table(store.facility_table_name, data=data, mode="overwrite")
     
     if ngos:
         print(f"Seeding {len(ngos)} smart-merged NGOs...")
-        data = store._prepare_ngo_data(ngos, "CSV Smart Merge v1")
+        data = store._prepare_ngo_data(ngos, "CSV Smart Merge v2")
         store.db.create_table(store.ngo_table_name, data=data, mode="overwrite")
         
     print(f"\nSUCCESS: Seeded {len(facilities)} Facilities and {len(ngos)} NGOs. Total {len(facilities)+len(ngos)} unique entities.")
 
 if __name__ == "__main__":
     direct_seed()
+
 
 
 if __name__ == "__main__":
