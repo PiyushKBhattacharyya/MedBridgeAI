@@ -92,30 +92,12 @@ def reprocess_all():
         progress_pct = (i + 1) / len(sample_files) * 100
         print(f"\n>>> PROGRESS: {i+1}/{len(sample_files)} ({progress_pct:.1f}%) | Current: {fname}")
         try:
-            # Force local LLM usage
-            prompt = extractor.system_prompt + "\n\nTEXT TO EXTRACT:\n" + text
-            fallback_response = fallback_llm.generate(prompt)
+            # Use the high-fidelity Gemini extractor with 10-key rotation
+            extraction_model = extractor.extract_from_text(text)
             
-            # Use json_repair to auto-heal mismatched braces or brackets
-            extracted_data = repair_json(fallback_response, return_objects=True)
-            
-            if not isinstance(extracted_data, dict):
-                print(f"Repair failed for {fname}, result was not a dict: {type(extracted_data)}")
+            if not extraction_model or (not extraction_model.facilities and not extraction_model.ngos):
+                print(f"No insights extracted from {fname}")
                 continue
-
-            # Robustness: Pre-clean for Pydantic list types
-            extracted_data = pre_clean_extracted_dict(extracted_data)
-            
-            # Schema safety checks
-            if "other_organizations" not in extracted_data:
-                extracted_data["other_organizations"] = []
-            if "facilities" not in extracted_data:
-                extracted_data["facilities"] = []
-            if "ngos" not in extracted_data:
-                extracted_data["ngos"] = []
-                
-            # Convert to Pydantic model
-            extraction_model = DocumentExtraction(**extracted_data)
             
             # Label with provenance and aggregate
             for fac in extraction_model.facilities:

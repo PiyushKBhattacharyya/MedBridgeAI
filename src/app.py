@@ -145,6 +145,16 @@ with tab3:
             match2 = re.search(pat2, text_str, re.IGNORECASE)
             if match2: return float(match2.group(1))
             return None
+        # 3. City Fallback Table (Common Ghana Cities)
+        ghana_cities = {
+            "accra": (5.6037, -0.1870), "kumasi": (6.6666, -1.6163), "tamale": (9.4008, -0.8393),
+            "takoradi": (4.8845, -1.7554), "tema": (5.6698, -0.0166), "cape coast": (5.1053, -1.2466),
+            "sekondi": (4.9340, -1.7137), "obuasi": (6.2000, -1.6667), "koforidua": (6.0946, -0.2591),
+            "wa": (10.0607, -2.5019), "sunyani": (7.3399, -2.3267), "ho": (6.6111, 0.4722),
+            "bawku": (11.0616, -0.2417), "bolgatanga": (10.7856, -0.8514), "techiman": (7.5851, -1.9392),
+            "asaimangas": (5.6667, -0.1667), "dansoman": (5.5500, -0.2500), "kasoa": (5.5342, -0.4244),
+            "tarkwa": (5.3047, -1.9847), "ashiaman": (5.7000, -0.0333)
+        }
 
         # --- REFACTORED MINER START ---
         # 1. Start with float64 columns
@@ -181,16 +191,6 @@ with tab3:
             df_dataset.loc[mask_reset, 'latitude'] = city_coords.apply(lambda x: x[0]).astype(float)
             df_dataset.loc[mask_reset, 'longitude'] = city_coords.apply(lambda x: x[1]).astype(float)
 
-        # 3. City Fallback Table (Common Ghana Cities)
-        ghana_cities = {
-            "accra": (5.6037, -0.1870), "kumasi": (6.6666, -1.6163), "tamale": (9.4008, -0.8393),
-            "takoradi": (4.8845, -1.7554), "tema": (5.6698, -0.0166), "cape coast": (5.1053, -1.2466),
-            "sekondi": (4.9340, -1.7137), "obuasi": (6.2000, -1.6667), "koforidua": (6.0946, -0.2591),
-            "wa": (10.0607, -2.5019), "sunyani": (7.3399, -2.3267), "ho": (6.6111, 0.4722),
-            "bawku": (11.0616, -0.2417), "bolgatanga": (10.7856, -0.8514), "techiman": (7.5851, -1.9392),
-            "asaimangas": (5.6667, -0.1667), "dansoman": (5.5500, -0.2500), "kasoa": (5.5342, -0.4244),
-            "tarkwa": (5.3047, -1.9847), "ashiaman": (5.7000, -0.0333)
-        }
 
         # City Fallback: Use address_city if latitude is still null
         if 'address_city' in df_dataset.columns:

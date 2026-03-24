@@ -278,12 +278,23 @@ class MedBridgeStore:
             
         table = self.db.open_table(self.ngo_table_name)
 
-        # Natural order for empty queries
-        if not query.strip():
-            return table.to_pandas().head(limit)
-
         vector = self.embeddings.embed_query(query)
-        return table.search(vector).limit(limit).to_pandas()
+        results_df = table.search(vector).limit(20).to_pandas()
+
+        # Hybrid Reranking: Boost results containing query keywords
+        keywords = [k.lower() for k in query.split() if len(k) > 2]
+        if keywords and not results_df.empty:
+            def calculate_boost(row):
+                text = f"{row['name']} {row.get('organizationDescription', '')} {' '.join(row.get('countries', []))}".lower()
+                score = 0
+                for kw in keywords:
+                    if kw in text: score += 1
+                return score
+            
+            results_df['boost_score'] = results_df.apply(calculate_boost, axis=1)
+            results_df = results_df.sort_values(by=['boost_score', '_distance'], ascending=[False, True])
+
+        return results_df.head(limit)
 
 
     def get_all_facilities(self):
