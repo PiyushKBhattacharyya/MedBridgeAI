@@ -2,6 +2,7 @@ import os
 import sys
 import warnings
 import json
+import time
 import re
 import google.generativeai as genai
 from typing import List
@@ -13,37 +14,52 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from src.schema.models import DocumentExtraction, Facility, NGO
 
 from src.utils.gemini_utils import rotator
+from src.utils.fallback_llm import fallback_llm
 
 load_dotenv()
 
 class IDPExtractor:
-    def __init__(self, model_id: str = "gemini-2.0-flash", temperature: float = 0.1):
+    def __init__(self, model_id: str = "gemini-2.5-flash", temperature: float = 0.1):
         """
         Initializes the IDP extractor using the Gemini API.
         """
         self.model_id = model_id
-        rotator.configure_genai()
-        self.model = genai.GenerativeModel(model_id)
         self.temperature = temperature
+        
+        # Configure the initial Gemini key
+        rotator.configure_genai()
+        self.model = genai.GenerativeModel(self.model_id)
+        
         print(f"IDPExtractor initialized with Gemini ({model_id}) and multiple keys.")
         
         # System instructions
         self.system_prompt = """You are an expert AI medical intelligence extraction system for the Virtue Foundation.
 Your task is to analyze medical reports, Facebook snippets, and facility surveys and extract a JSON object.
 
+THE DOCUMENTS OFTEN USE TAGS EXPLICITLY. MAP THEM AS FOLLOWS:
+- [FIELD_PHONE] contents => 'phone_numbers' (list of strings)
+- [FIELD_EMAIL] contents => 'email' (string)
+- [FIELD_WEB] or [FIELD_WEB_OFFICIAL] => 'websites' (list of strings)
+- [FIELD_ADDR1] contents => 'address_line1'
+- [FIELD_CITY] contents => 'address_city'
+- [FIELD_REGION] contents => 'address_stateOrRegion'
+- [FIELD_YEAR] contents => 'yearEstablished'
+- [FIELD_DOCS] contents => 'numberDoctors'
+- [FIELD_CAPACITY] contents => 'capacity'
+- [FIELD_VOLUNTEERS] contents => 'acceptsVolunteers' (boolean)
+- [FIELD_FB], [FIELD_TW], [FIELD_LI], [FIELD_IG] => the respective social media link fields.
+
 EXTRACTION RULES:
-- NAME DISCOVERY: The organization name is CRITICAL and is usually in the document title or header (e.g., "# Medical Report: [NAME]"). If you see "3E Medical Center", that is the name.
+- NAME DISCOVERY: The organization name is CRITICAL and is usually in the document title or header.
 - ENTITY CLASSIFICATION: 
     - [ORG_TYPE]: facility -> Use 'facilities' list.
     - [ORG_TYPE]: ngo -> Use 'ngos' list.
-    - If unsure, use 'other_organizations'.
-- BE COMPLETELY EXHAUSTIVE: If an organization is mentioned in the title or text, extract it. Do not return empty lists if there is a header title!
-- SCHEMA CONFORMANCE: Output ONLY 'facilities', 'ngos', and 'other_organizations'.
-- FORMATTING: Return ONLY a valid JSON object.
+- BE COMPLETELY EXHAUSTIVE: If 'Capabilities' or 'Text Content' sections mention equipment (MRI, CT, X-Ray), procedures, or specialties, extract them into 'equipment', 'procedure', and 'specialties' (list of strings).
+- DO NOT RETURN NULL: Use empty lists [] or empty strings "" if a field is absolutely not found. Output ONLY a valid JSON object.
 
 Output ONLY this schema:
 {
-  "facilities": [{"name": "string", "description": "string", "capability": ["string"], "address_line1": "string", "address_city": "string", "address_country": "string"}],
+  "facilities": [{"name": "string", "description": "string", "capability": ["string"], "equipment": ["string"], "procedure": ["string"], "specialties": ["string"], "address_line1": "string", "address_city": "string", "phone_numbers": ["string"], "email": "string", "websites": ["string"]}],
   "ngos": [{"name": "string", "organizationDescription": "string", "countries": ["string"]}],
   "other_organizations": [{"name": "string", "address_city": "string"}]
 }
@@ -66,6 +82,9 @@ Output ONLY this schema:
                     )
                 )
                 
+                rotator.reset_backoff()
+                time.sleep(0.5) # Gentle pacing
+                
                 data = json.loads(response.text)
                 # Ensure facilities and ngos keys exist if not present in Gemini output
                 if "facilities" not in data: data["facilities"] = []
@@ -79,19 +98,30 @@ Output ONLY this schema:
                 if "429" in err_msg or "quota" in err_msg:
                     print(f"Extraction Key Rotated due to 429. Retrying...")
                     rotator.rotate_key()
-                    self.model = genai.GenerativeModel(self.model_id) # Re-instantiate model with new key config
+                    self.model = genai.GenerativeModel(self.model_id)
                     continue
-                print(f"Gemini Extraction Error: {e}")
                 
-                # Fallback to manual regex if JSON fails
-                try:
-                    match = re.search(r'\{.*\}', response.text, re.DOTALL)
-                    if match:
-                        return DocumentExtraction(**json.loads(match.group(0)))
-                except: pass
+                print(f"Gemini Extraction failed: {e}. Attempting local fallback...")
                 break
-                
-        return DocumentExtraction(facilities=[], ngos=[])
+        
+        # FINAL FALLBACK to local LLM
+        print("Using Local LLM Fallback for Extraction...")
+        try:
+            fallback_prompt = f"EXTRACT JSON for Facility/NGO from this text:\n{text}\n\nReturn ONLY raw JSON with keys 'facilities', 'ngos', 'other_organizations'."
+            res_text = fallback_llm.generate(fallback_prompt)
+            # Find JSON block
+            match = re.search(r"\{.*\}", res_text, re.DOTALL)
+            if match:
+                data = json.loads(match.group())
+                # Ensure keys exist
+                if "facilities" not in data: data["facilities"] = []
+                if "ngos" not in data: data["ngos"] = []
+                if "other_organizations" not in data: data["other_organizations"] = []
+                return DocumentExtraction(**data)
+        except Exception as fe:
+            print(f"Local fallback extraction failed: {fe}")
+
+        return DocumentExtraction(facilities=[], ngos=[], other_organizations=[])
 
     def extract_from_documents(self, documents: List) -> List[DocumentExtraction]:
         """

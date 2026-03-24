@@ -30,7 +30,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-@st.cache_resource
+# @st.cache_resource
 def load_resources():
     """Initializes the Gemini agents and database store."""
     store = MedBridgeStore()
@@ -49,6 +49,7 @@ if 'chat_history' not in st.session_state:
 with st.sidebar:
     st.title("🏥 MedBridge AI")
     st.success("✓ Gemini 2.0 Flash Active")
+    st.info("🛡️ Local LLM Fallback (Qwen) Ready")
     st.info("Direct Mapping Deduplication Enabled")
     
     st.divider()
@@ -79,8 +80,6 @@ with tab1:
                     st.write(f"Found {len(extraction.facilities)} facilities, {len(extraction.ngos)} NGOs, and {len(extraction.other_organizations)} other entities.")
                     st.session_state.store.add_extractions(extraction, source_doc=uploaded_file.name)
                     st.toast(f"Data from {uploaded_file.name} persisted to LanceDB", icon="💾")
-                    with st.expander("Show Extracted JSON"):
-                        st.json(extraction.model_dump())
                     os.remove(temp_path)
 
 # --- Tab 2: Medical Assistant ---
@@ -103,99 +102,150 @@ with tab2:
                 st.markdown(response)
                 st.session_state.chat_history.append({"role": "assistant", "content": response})
 
-# --- Tab 3: Database View ---
+# --- Tab 3: Database View (Map) ---
 with tab3:
-    st.header("Stored Medical Data")
+    col_a, col_b = st.columns([3, 1])
+    with col_a:
+        st.subheader("Global Medical Resource Map")
+    with col_b:
+        if st.button("🔄 Refresh Analyzed Data"):
+            st.session_state.store = MedBridgeStore()
+            st.rerun()
     
-    facilities_df = st.session_state.store.search_facilities("", limit=500)
-    ngos_df = st.session_state.store.search_ngos("", limit=500)
+    # 1. Load data from LanceDB (Analyzed Data)
+    f_all = st.session_state.store.get_all_facilities()
+    n_all = st.session_state.store.get_all_ngos()
     
-    def format_list_column(val):
-        """Clean list/str formatting for UI."""
-        if val is None: return "None"
-        s = str(val).strip()
-        if s.lower() in ["nan", "none", "", "unknown", "[]", "['']", "[none]"]: return "None"
+    # 2. Load data from Original Dataset (Reference/Miner)
+    try:
+        csv_path = "data/Virtue Foundation Ghana v0.3 - Sheet1.csv"
+        df_dataset = pd.read_csv(csv_path, encoding='latin1')
+        df_dataset.columns = [c.strip() for c in df_dataset.columns]
         
-        # Detect if it's a bracketed "list-like" string or actual list
-        if isinstance(val, (list, pd.Series, np.ndarray)) or s.startswith("["):
+        # Support both dedicated columns and buried text coordinates
+        import re
+        def extract_coord(text, is_lat=True):
+            if pd.isna(text): return None
+            text_str = str(text).strip()
+            # Pattern 0: Pure number
             try:
-                # If it's already a list-like object, use it
-                items = val if isinstance(val, (list, pd.Series, np.ndarray)) else []
-                
-                # If it's a string starting with [, parse it
-                if not items and s.startswith("["):
-                    import re
-                    # Pure surgical cleaning: remove outer brackets
-                    core = s[1:-1].strip()
-                    # Split by common patterns: ' ' or " " or , or newline
-                    # This handles ['A' 'B'] and ["A" "B"] and ['A', 'B']
-                    parts = re.split(r"['\"]\s+['\"]|['\"],\s+['\"]|,", core)
-                    items = [p.strip("'\" \n\t") for p in parts if p.strip("'\" \n\t")]
-                
-                if not items: return "None"
-                # Final clean of noise items
-                cleaned = [str(x).strip() for x in items if x and str(x).strip().lower() not in ["", "nan", "none", "unknown", "+", "[]"]]
-                return ", ".join(cleaned) if cleaned else "None"
-            except: 
-                pass
+                val = float(text_str)
+                # Reasonable bounds check for Ghana
+                if is_lat and (4.0 <= val <= 12.0): return val
+                if not is_lat and (-4.0 <= val <= 2.0): return val
+            except: pass
+
+            # Pattern 1: Label then Number (latitude: 5.6)
+            pat1 = r"(?:latitude|lat)\s*[:\s]*([-+]?[0-9]*\.?[0-9]+)" if is_lat else r"(?:longitude|long|lon)\s*[:\s]*([-+]?[0-9]*\.?[0-9]+)"
+            match1 = re.search(pat1, text_str, re.IGNORECASE)
+            if match1: return float(match1.group(1))
+            
+            # Pattern 2: Number then Label (5.6 latitude)
+            pat2 = r"([-+]?[0-9]*\.?[0-9]+)\s*(?:latitude|lat)" if is_lat else r"([-+]?[0-9]*\.?[0-9]+)\s*(?:longitude|long|lon)"
+            match2 = re.search(pat2, text_str, re.IGNORECASE)
+            if match2: return float(match2.group(1))
+            return None
+
+        # --- REFACTORED MINER START ---
+        # 1. Start with float64 columns
+        df_dataset['latitude'] = pd.to_numeric(df_dataset.get('latitude', np.nan), errors='coerce').astype('float64')
+        df_dataset['longitude'] = pd.to_numeric(df_dataset.get('longitude', np.nan), errors='coerce').astype('float64')
+
+        # 2. Mine from all columns
+        for col in df_dataset.columns:
+            mask = df_dataset['latitude'].isna() | (df_dataset['latitude'] == 0)
+            if not mask.any(): break
+            
+            # 2a. Mining Coordinates from text
+            # Use a temporary series to avoid SettingWithCopy and dtype warnings
+            new_lats = df_dataset.loc[mask, col].apply(lambda x: extract_coord(x, is_lat=True))
+            new_lons = df_dataset.loc[mask, col].apply(lambda x: extract_coord(x, is_lat=False))
+            
+            # Only update where we found something non-null
+            found_mask = new_lats.notna()
+            df_dataset.loc[new_lats[found_mask].index, 'latitude'] = new_lats[found_mask].astype(float)
+            df_dataset.loc[new_lons[found_mask].index, 'longitude'] = new_lons[found_mask].astype(float)
+
+            # 2b. RECOVERY: If still null, search for CITY NAMES in the text
+            mask_reset = df_dataset['latitude'].isna() | (df_dataset['latitude'] == 0)
+            if not mask_reset.any(): break
+            
+            def find_city_in_text(text):
+                if pd.isna(text): return None, None
+                t = str(text).lower()
+                for city, coords in ghana_cities.items():
+                    if city in t: return coords
+                return None, None
+            
+            city_coords = df_dataset.loc[mask_reset, col].apply(find_city_in_text)
+            df_dataset.loc[mask_reset, 'latitude'] = city_coords.apply(lambda x: x[0]).astype(float)
+            df_dataset.loc[mask_reset, 'longitude'] = city_coords.apply(lambda x: x[1]).astype(float)
+
+        # 3. City Fallback Table (Common Ghana Cities)
+        ghana_cities = {
+            "accra": (5.6037, -0.1870), "kumasi": (6.6666, -1.6163), "tamale": (9.4008, -0.8393),
+            "takoradi": (4.8845, -1.7554), "tema": (5.6698, -0.0166), "cape coast": (5.1053, -1.2466),
+            "sekondi": (4.9340, -1.7137), "obuasi": (6.2000, -1.6667), "koforidua": (6.0946, -0.2591),
+            "wa": (10.0607, -2.5019), "sunyani": (7.3399, -2.3267), "ho": (6.6111, 0.4722),
+            "bawku": (11.0616, -0.2417), "bolgatanga": (10.7856, -0.8514), "techiman": (7.5851, -1.9392),
+            "asaimangas": (5.6667, -0.1667), "dansoman": (5.5500, -0.2500), "kasoa": (5.5342, -0.4244),
+            "tarkwa": (5.3047, -1.9847), "ashiaman": (5.7000, -0.0333)
+        }
+
+        # City Fallback: Use address_city if latitude is still null
+        if 'address_city' in df_dataset.columns:
+            mask_city = df_dataset['latitude'].isna() | (df_dataset['latitude'] == 0)
+            def city_to_lat(city):
+                c = str(city).lower().strip()
+                return ghana_cities.get(c, (None, None))[0]
+            def city_to_lon(city):
+                c = str(city).lower().strip()
+                return ghana_cities.get(c, (None, None))[1]
+            
+            df_dataset.loc[mask_city, 'latitude'] = df_dataset.loc[mask_city, 'address_city'].apply(city_to_lat)
+            df_dataset.loc[mask_city, 'longitude'] = df_dataset.loc[mask_city, 'address_city'].apply(city_to_lon)
+
+        # Add Jitter to prevent perfect overlap at city centers
+        mask_jitter = df_dataset['latitude'].notna()
+        df_dataset.loc[mask_jitter, 'latitude'] += np.random.uniform(-0.015, 0.015, size=mask_jitter.sum())
+        df_dataset.loc[mask_jitter, 'longitude'] += np.random.uniform(-0.015, 0.015, size=mask_jitter.sum())
+
+        # Final cleanup for plotting
+        ds_coords = df_dataset[['latitude', 'longitude']].dropna()
+        ds_coords = ds_coords[(ds_coords['latitude'] != 0) & (ds_coords['longitude'] != 0)]
+    except Exception as e:
+        st.sidebar.error(f"Map Miner Error: {e}")
+        ds_coords = pd.DataFrame()
+
+    # Combine coordinates for mapping
+    map_list = []
+    
+    # Add Original Dataset (Gray/White)
+    if not ds_coords.empty:
+        ds_coords = ds_coords.copy()
+        ds_coords['color'] = "#808080" # Gray for original data
+        map_list.append(ds_coords)
+
+    # Add Analyzed Facilities (Green)
+    if not f_all.empty:
+        f_coords = f_all[['latitude', 'longitude']].dropna().copy()
+        f_coords = f_coords[(f_coords['latitude'] != 0) & (f_coords['longitude'] != 0)]
+        f_coords['color'] = "#28a745" 
+        map_list.append(f_coords)
         
-        # Final fallback cleaning for any remaining brackets/quotes
-        res = s.replace("[", "").replace("]", "").replace("'", "").replace('"', "").strip()
-        return res if res and res.lower() not in ["nan", "none", "unknown"] else "None"
+    # Add Analyzed NGOs (Blue)
+    if not n_all.empty:
+        n_coords = n_all[['latitude', 'longitude']].dropna().copy()
+        n_coords = n_coords[(n_coords['latitude'] != 0) & (n_coords['longitude'] != 0)]
+        n_coords['color'] = "#007bff"
+        map_list.append(n_coords)
+        
+    if map_list:
+        combined_map = pd.concat(map_list)
+        # Explicitly cast to float64 to avoid Pandas warning
+        combined_map['latitude'] = pd.to_numeric(combined_map['latitude'], errors='coerce')
+        combined_map['longitude'] = pd.to_numeric(combined_map['longitude'], errors='coerce')
+        st.map(combined_map, size=20, color="color", width="stretch")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Facilities")
-        if not facilities_df.empty:
-            f_display = facilities_df.drop(columns=['vector'], errors='ignore')
-            
-            # Cast numeric columns to avoid ArrowTypeError
-            num_cols = ['yearEstablished', 'numberDoctors', 'capacity', 'area', 'latitude', 'longitude']
-            for c in num_cols:
-                if c in f_display.columns:
-                    f_display[c] = pd.to_numeric(f_display[c], errors='coerce')
-                    if c in ['yearEstablished', 'numberDoctors', 'capacity', 'area']:
-                        f_display[c] = f_display[c].apply(lambda x: str(int(x)) if pd.notna(x) else "None")
-                    else:
-                        f_display[c] = f_display[c].apply(lambda x: str(x) if pd.notna(x) else "None")
-            
-            list_cols = ['capability', 'equipment', 'procedure', 'phone_numbers', 'websites', 'specialties', 'affiliationTypeIds']
-            for col in list_cols:
-                if col in f_display.columns: f_display[col] = f_display[col].apply(format_list_column)
-            
-            st.dataframe(f_display.fillna("None"), hide_index=True)
-            
-            # Full Download
-            full_f = st.session_state.store.get_all_facilities().drop(columns=['vector'], errors='ignore')
-            for col in ['capability', 'equipment', 'procedure', 'phone_numbers', 'websites']:
-                if col in full_f.columns: full_f[col] = full_f[col].apply(format_list_column)
-            st.download_button("Download Facilities CSV", full_f.to_csv(index=False).encode('utf-8'), "facilities.csv", "text/csv")
-        else: st.info("No facilities stored.")
-
-    with col2:
-        st.subheader("NGOs")
-        if not ngos_df.empty:
-            n_display = ngos_df.drop(columns=['vector'], errors='ignore')
-            
-            # Cast numeric columns to avoid ArrowTypeError
-            for c in ['yearEstablished', 'latitude', 'longitude']:
-                if c in n_display.columns:
-                    n_display[c] = pd.to_numeric(n_display[c], errors='coerce')
-                    if c == 'yearEstablished':
-                        n_display[c] = n_display[c].apply(lambda x: str(int(x)) if pd.notna(x) else "None")
-                    else:
-                        n_display[c] = n_display[c].apply(lambda x: str(x) if pd.notna(x) else "None")
-                    
-            ngo_list_cols = ['phone_numbers', 'websites', 'countries', 'email', 'missionStatement']
-            for col in ngo_list_cols:
-                if col in n_display.columns: n_display[col] = n_display[col].apply(format_list_column)
-            st.dataframe(n_display.fillna("None"), hide_index=True)
-            
-            # Full Download
-            full_n = st.session_state.store.get_all_ngos().drop(columns=['vector'], errors='ignore')
-            for col in ['phone_numbers', 'websites']:
-                if col in full_n.columns: full_n[col] = full_n[col].apply(format_list_column)
-            st.download_button("Download NGOs CSV", full_n.to_csv(index=False).encode('utf-8'), "ngos.csv", "text/csv")
-        else: st.info("No NGOs stored.")
-
-st.caption("Virtue Foundation x MedBridgeAI | Gemini Powered Intelligence")
+    else:
+        st.info("No geospatial data available. Ensure coordinates are present in the CSV (either as columns or in text descriptions).")

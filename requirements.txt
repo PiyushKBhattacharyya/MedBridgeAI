@@ -11,3 +11,8 @@ lancedb
 pyarrow
 fastembed
 google-generativeai
+json-repair
+transformers
+torch
+onnxruntime
+accelerate

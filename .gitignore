@@ -1,8 +1,11 @@
 venv/
 .pytest_cache/
-__pycache__
+__pycache__/
+*.pyc
 .env
 samples/
+models/
 .DS_Store
-data/prompts_and_pydantic_models
-data/
+data/medbridge.lancedb/
+diag_*.py
+test_miner_*.py

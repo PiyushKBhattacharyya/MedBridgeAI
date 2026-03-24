@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import warnings
 import google.generativeai as genai
 import pandas as pd
@@ -12,56 +13,55 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from src.synthesis.database import MedBridgeStore
 
 from src.utils.gemini_utils import rotator
+from src.utils.fallback_llm import fallback_llm
 
 load_dotenv()
 
 class SynthesisAgent:
-    def __init__(self, store: MedBridgeStore, model_id: str = "gemini-2.0-flash"):
+    def __init__(self, store: MedBridgeStore, model_id: str = "gemini-2.5-flash"):
         """
-        Initializes the Synthesis Assistant using the Gemini API.
+        Initializes the synthesis agent using Gemini.
         """
         self.store = store
         self.model_id = model_id
-        rotator.configure_genai()
-        self.model = genai.GenerativeModel(model_id)
-        print(f"SynthesisAgent initialized with Gemini ({model_id}) and multiple keys.")
         
-        self.system_prompt = "You are the MedBridge AI Medical Assistant. Your role is to answer questions about healthcare facilities and NGOs in Ghana based on the provided search results from our database. Use ONLY the information provided. Be concise and professional."
+        # Configure the initial Gemini key
+        rotator.configure_genai()
+        self.model = genai.GenerativeModel(self.model_id)
+        
+        print(f"SynthesisAgent initialized with Gemini ({model_id}) and multiple keys.")
 
     def answer_question(self, query: str) -> str:
         """
-        Retrieves relevant data from the store and synthesizes an answer with citations using Gemini.
+        Answers a user question based on the retrieved data from LanceDB.
         """
-        # Step 1: Search facilities and NGOs
+        # Search the database for relevant context
         facilities_df = self.store.search_facilities(query, limit=5)
-        ngos_df = self.store.search_ngos(query, limit=3)
+        ngos_df = self.store.search_ngos(query, limit=5)
         
-        # Combine results into context
-        context = "--- FACILITIES ---\n"
+        # Build context string
+        context = "Relevant Facilities:\n"
         if not facilities_df.empty:
-            context += facilities_df.drop(columns=['vector', 'latitude', 'longitude'], errors='ignore').to_string(index=False)
+            for _, row in facilities_df.iterrows():
+                context += f"- {row['name']}: {row.get('description', 'No description')} (Capibilities: {row.get('capability', 'None')})\n"
         else:
-            context += "No matching facilities found."
+            context += "No relevant facilities found.\n"
             
-        context += "\n\n--- NGOs ---\n"
+        context += "\nRelevant NGOs:\n"
         if not ngos_df.empty:
-            context += ngos_df.drop(columns=['vector', 'latitude', 'longitude'], errors='ignore').to_string(index=False)
+            for _, row in ngos_df.iterrows():
+                context += f"- {row['name']}: {row.get('organizationDescription', 'No description')} (Countries: {row.get('countries', 'None')})\n"
         else:
-            context += "No matching NGOs found."
-
-        # Step 2: Generate synthesized answer via Gemini with key rotation
-        prompt = f"""System: {self.system_prompt}
- 
- SEARCH RESULTS CONTEXT:
- {context}
- 
- User Question: {query}
- Assistant:"""
+            context += "No relevant NGOs found.\n"
+            
+        prompt = f"Context from database:\n{context}\n\nQuestion: {query}\n\nAnswer based ONLY on the context above. If unsure, say you don't know."
         
         # Try multiple keys if 429 occurs
         for _ in range(max(1, len(rotator.keys))):
             try:
                 response = self.model.generate_content(prompt)
+                rotator.reset_backoff()
+                time.sleep(0.5) # Gentle pacing
                 return response.text.strip()
             except Exception as e:
                 err_msg = str(e).lower()
@@ -70,7 +70,13 @@ class SynthesisAgent:
                     rotator.rotate_key()
                     self.model = genai.GenerativeModel(self.model_id) # Re-instantiate model with new key config
                     continue
-                print(f"Gemini Synthesis Error: {e}")
-                return f"I encountered an error while synthesizing an answer: {e}"
                 
-        return "I exhausted all available Gemini API keys and still hit quota limits. Please try again later or add more API keys."
+                print(f"Gemini Synthesis failed: {e}. Attempting local fallback...")
+                break
+        
+        # FINAL FALLBACK to local LLM
+        print("Using Local LLM Fallback for Synthesis...")
+        try:
+            return fallback_llm.generate(prompt)
+        except Exception as fe:
+            return f"I encountered an error while synthesizing an answer: {fe}"

@@ -30,6 +30,7 @@ class BaseOrganization(BaseModel):
         None, description="URL to the organization's Instagram account"
     )
     logo: Optional[str] = Field(None, description="URL linking to the organization's logo image")
+    source_doc: Optional[str] = Field(None, description="Source document filename for data lineage")
 
     # Flattened address fields
     address_line1: Optional[str] = Field(
