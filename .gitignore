@@ -9,3 +9,5 @@ models/
 data/medbridge.lancedb/
 diag_*.py
 test_miner_*.py
+# Large ONNX model data files
+*.onnx_data
