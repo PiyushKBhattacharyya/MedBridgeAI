@@ -5,6 +5,23 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
+def _load_from_streamlit_secrets():
+    """
+    On Streamlit Cloud there is no .env file — secrets live in st.secrets.
+    This helper injects them into os.environ so the rest of the codebase
+    (which reads os.environ / load_dotenv) works unchanged.
+    Silently skips if streamlit is not available or secrets are not set.
+    """
+    try:
+        import streamlit as st
+        for key, value in st.secrets.items():
+            if isinstance(value, str) and key not in os.environ:
+                os.environ[key] = value
+    except Exception:
+        pass  # Running locally without st.secrets — .env handles it
+
+_load_from_streamlit_secrets()
+
 class GeminiRotator:
     def __init__(self):
         self._load_keys()
@@ -16,12 +33,12 @@ class GeminiRotator:
             print(f"GeminiRotator: Successfully loaded {len(self.keys)} API keys.")
 
     def _load_keys(self):
-        """Discovers all keys from environment variables."""
+        """Discovers all keys from environment variables (populated from .env or st.secrets)."""
         # 1. Start with dedicated comma-separated list
         keys_str = os.getenv("GEMINI_API_KEYS", "")
         self.keys = [k.strip() for k in keys_str.split(",") if k.strip()]
         
-        # 2. Add individual keys (GEMINI_API_KEY, GEMINI_API_KEY_CHAT_1, etc.)
+        # 2. Add individual numbered keys (GEMINI_API_KEY_1 … GEMINI_API_KEY_N)
         for key, value in os.environ.items():
             if key.startswith("GEMINI_API_KEY") and key != "GEMINI_API_KEYS":
                 if value and value.strip() not in self.keys:
