@@ -156,10 +156,13 @@ with tab3:
             "tarkwa": (5.3047, -1.9847), "ashiaman": (5.7000, -0.0333)
         }
 
-        # --- REFACTORED MINER START ---
-        # 1. Start with float64 columns
-        df_dataset['latitude'] = pd.to_numeric(df_dataset.get('latitude', np.nan), errors='coerce').astype('float64')
-        df_dataset['longitude'] = pd.to_numeric(df_dataset.get('longitude', np.nan), errors='coerce').astype('float64')
+        # 1. Start with float64 columns — safely handle CSVs that have no lat/lon columns at all
+        if 'latitude' not in df_dataset.columns:
+            df_dataset['latitude'] = np.nan
+        if 'longitude' not in df_dataset.columns:
+            df_dataset['longitude'] = np.nan
+        df_dataset['latitude'] = pd.to_numeric(df_dataset['latitude'], errors='coerce').astype('float64')
+        df_dataset['longitude'] = pd.to_numeric(df_dataset['longitude'], errors='coerce').astype('float64')
 
         # 2. Mine from all columns
         for col in df_dataset.columns:
@@ -188,8 +191,8 @@ with tab3:
                 return None, None
             
             city_coords = df_dataset.loc[mask_reset, col].apply(find_city_in_text)
-            df_dataset.loc[mask_reset, 'latitude'] = city_coords.apply(lambda x: x[0]).astype(float)
-            df_dataset.loc[mask_reset, 'longitude'] = city_coords.apply(lambda x: x[1]).astype(float)
+            df_dataset.loc[mask_reset, 'latitude'] = pd.to_numeric(city_coords.apply(lambda x: x[0]), errors='coerce')
+            df_dataset.loc[mask_reset, 'longitude'] = pd.to_numeric(city_coords.apply(lambda x: x[1]), errors='coerce')
 
 
         # City Fallback: Use address_city if latitude is still null
@@ -202,8 +205,8 @@ with tab3:
                 c = str(city).lower().strip()
                 return ghana_cities.get(c, (None, None))[1]
             
-            df_dataset.loc[mask_city, 'latitude'] = df_dataset.loc[mask_city, 'address_city'].apply(city_to_lat)
-            df_dataset.loc[mask_city, 'longitude'] = df_dataset.loc[mask_city, 'address_city'].apply(city_to_lon)
+            df_dataset.loc[mask_city, 'latitude'] = pd.to_numeric(df_dataset.loc[mask_city, 'address_city'].apply(city_to_lat), errors='coerce')
+            df_dataset.loc[mask_city, 'longitude'] = pd.to_numeric(df_dataset.loc[mask_city, 'address_city'].apply(city_to_lon), errors='coerce')
 
         # Add Jitter to prevent perfect overlap at city centers
         mask_jitter = df_dataset['latitude'].notna()
