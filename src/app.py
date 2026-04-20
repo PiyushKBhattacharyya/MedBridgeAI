@@ -11,6 +11,8 @@ from extraction.agent import IDPExtractor
 from extraction.loader import load_text_documents
 from synthesis.database import MedBridgeStore
 from synthesis.agent import SynthesisAgent
+from schema.models import Facility, NGO
+import json
 
 # Page configuration
 st.set_page_config(
@@ -41,6 +43,22 @@ def load_resources():
 # Initialize Resources
 with st.spinner("Connecting to Gemini Intelligence..."):
     st.session_state.store, st.session_state.extractor, st.session_state.agent = load_resources()
+
+# Auto-seed if database is empty and seed file exists
+if st.session_state.store.get_all_facilities().empty and st.session_state.store.get_all_ngos().empty:
+    seed_path = os.path.join("data", "seed_data.json")
+    if os.path.exists(seed_path):
+        with st.spinner("Seeding database from cloud snapshot..."):
+            try:
+                with open(seed_path, "r") as f:
+                    seed_data = json.load(f)
+                    facilities = [Facility(**d) for d in seed_data.get("facilities", [])]
+                    ngos = [NGO(**d) for d in seed_data.get("ngos", [])]
+                    st.session_state.store.add_facilities(facilities, source_doc="Cloud Seed")
+                    st.session_state.store.add_ngos(ngos, source_doc="Cloud Seed")
+                st.toast("Database seeded from snapshot!", icon="🌱")
+            except Exception as e:
+                st.error(f"Seeding failed: {e}")
 
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
